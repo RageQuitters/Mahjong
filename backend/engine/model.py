@@ -61,9 +61,11 @@ def train_best_discard_model(
 # =========================
 def predict_best_discard(hand_obj: dict) -> dict:
     if win_checker.is_winning(hand_obj):
+        calc = tai_calc.calculate_tai(hand_obj)
         return {
             "winning": True,
-            "tai": tai_calc.calculate_tai(hand_obj)
+            "tai": calc["tai"],
+            "breakdown": calc["breakdown"]
         }
 
     model = joblib.load(MODEL_PATH)

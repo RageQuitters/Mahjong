@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from api.schemas import HandRequest, DiscardResponse
+from api.schemas import HandRequest, PredictionResponse
 from engine.model import predict_best_discard
 import representation.hand as hand
 
@@ -8,7 +8,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-@app.post("/predict", response_model=DiscardResponse)
+@app.post("/predict", response_model=PredictionResponse)
 def predict(req: HandRequest):
     my_hand = hand.encode_hand(req.concealed, req.flowers, req.display)
     return predict_best_discard(my_hand)
