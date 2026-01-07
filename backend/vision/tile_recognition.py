@@ -1,68 +1,125 @@
 import cv2
+import os
 import numpy as np
 
-def extract_tile_images(processed_img, tile_boxes):
-    """
-    Extract tile images using tilted boxes.
+TEMPLATE_SIZE = (64, 64)
 
-    Args:
-        processed_img: binary image
-        tile_boxes: list of (4,2) tilted box arrays
+# -------------------------------------------------
+# Load tile templates
+# -------------------------------------------------
+def load_tile_templates(template_dir):
+    """
+    Loads all tile templates into memory.
 
     Returns:
-        list of cropped tile images
+        dict[label] = normalized template image
     """
-    tiles = []
+    templates = {}
+
+    for fname in os.listdir(template_dir):
+        if not fname.lower().endswith((".png", ".jpg", ".jpeg")):
+            continue
+
+        label = os.path.splitext(fname)[0]
+        path = os.path.join(template_dir, fname)
+
+        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            continue
+
+        img = cv2.resize(img, TEMPLATE_SIZE, interpolation=cv2.INTER_AREA)
+        _, img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
+
+        templates[label] = img
+
+    return templates
+
+
+# -------------------------------------------------
+# Extract tile image from tilted box
+# -------------------------------------------------
+def extract_tile_from_box(processed_img, box):
+    """
+    Extracts a tile using perspective warp from a tilted box.
+    """
+    box = np.array(box, dtype=np.float32)
+
+    # Order points: tl, tr, br, bl
+    rect = cv2.minAreaRect(box)
+    pts = cv2.boxPoints(rect)
+
+    w = int(rect[1][0])
+    h = int(rect[1][1])
+
+    if w <= 0 or h <= 0:
+        return None
+
+    dst = np.array([
+        [0, 0],
+        [w - 1, 0],
+        [w - 1, h - 1],
+        [0, h - 1]
+    ], dtype=np.float32)
+
+    M = cv2.getPerspectiveTransform(pts, dst)
+    warped = cv2.warpPerspective(processed_img, M, (w, h))
+
+    warped = cv2.resize(warped, TEMPLATE_SIZE, interpolation=cv2.INTER_AREA)
+    _, warped = cv2.threshold(warped, 127, 255, cv2.THRESH_BINARY)
+
+    return warped
+
+
+# -------------------------------------------------
+# Compare tile against templates
+# -------------------------------------------------
+def match_tile(tile_img, templates):
+    """
+    Returns best matching tile label.
+    """
+    best_label = "unknown"
+    best_score = -1
+
+    for label, template in templates.items():
+        score = cv2.matchTemplate(
+            tile_img,
+            template,
+            cv2.TM_CCOEFF_NORMED
+        )[0][0]
+
+        if score > best_score:
+            best_score = score
+            best_label = label
+
+    return best_label, best_score
+
+
+# -------------------------------------------------
+# Full recognition pipeline
+# -------------------------------------------------
+def recognize_tiles(processed_img, tile_boxes, template_dir):
+    """
+    Recognizes each detected tile.
+
+    Returns:
+        list of dicts with box + label
+    """
+    templates = load_tile_templates(template_dir)
+
+    results = []
 
     for box in tile_boxes:
-        box = box.astype(np.int32)
+        tile_img = extract_tile_from_box(processed_img, box)
+        if tile_img is None:
+            continue
 
-        # Create mask for the rotated rectangle
-        mask = np.zeros(processed_img.shape, dtype=np.uint8)
-        cv2.fillPoly(mask, [box], 255)
+        label, score = match_tile(tile_img, templates)
 
-        # Apply mask
-        masked = cv2.bitwise_and(processed_img, processed_img, mask=mask)
+        results.append({
+            "box": box,
+            "label": label,
+            "score": score,
+            "tile_img": tile_img
+        })
 
-        # Crop bounding rectangle
-        x, y, w, h = cv2.boundingRect(box)
-        tile = masked[y:y+h, x:x+w]
-
-        if tile.size > 0:
-            tiles.append(tile)
-
-    return tiles
-
-
-def normalize_tile(tile_img, size=(64, 64)):
-    return cv2.resize(tile_img, size, interpolation=cv2.INTER_AREA)
-
-
-def simple_tile_features(tile):
-    white_pixels = cv2.countNonZero(tile)
-    h, w = tile.shape
-    density = white_pixels / (h * w + 1e-6)
-
-    vertical_proj = tile.sum(axis=0)
-    horizontal_proj = tile.sum(axis=1)
-
-    return {
-        "density": density,
-        "v_peaks": (vertical_proj > vertical_proj.mean()).sum(),
-        "h_peaks": (horizontal_proj > horizontal_proj.mean()).sum()
-    }
-
-
-def classify_tile(tile):
-    features = simple_tile_features(tile)
-
-    if features["density"] < 0.08:
-        return "unknown"
-
-    if features["v_peaks"] > features["h_peaks"] * 2:
-        return "bamboo"
-
-    if features["density"] > 0.35:
-        return "dots"
-
-    return "characters"
+    return results
