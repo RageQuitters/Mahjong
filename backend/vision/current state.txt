@@ -11,3 +11,8 @@ input: jpg/png ->
 BGR by cv2.imread + resize 
 -> list of tile images (BGR) (result of extract tile images, using tile box outline tuple list) 
 -> classification (using inference.py ie cnn model on list of tile images) (SUPPOSED TO CONVERT TO RGB ON THIS STEP BUT ITHINK NVR)
+
+dataset/model
+removed because is a lot of data
+run dataset.py to generate
+run train_model.py to get new model on updated dataset
