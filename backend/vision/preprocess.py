@@ -15,7 +15,7 @@ def preprocess_image(img, resize_dim=(800, 600), debug=False):
 
     # --- CRITICAL CHANGE: VERTICAL ONLY DILATION ---
     # Use (15, 1) kernel: effectively makes vertical lines longer 
-    # but does NOT merge items side-by-side.
+    # but does NOT merge items side-by-side.    
     kernel = np.ones((15, 1), np.uint8) 
     dilated = cv2.dilate(edges, kernel, iterations=2)
 
