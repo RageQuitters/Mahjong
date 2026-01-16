@@ -9,7 +9,7 @@ import representation.hand as hand
 
 '''
 # Image tile detection
-import vision.detect_tiles as tile_detector
+from vision.detect_tiles import run_tile_dectection
 '''
 
 
