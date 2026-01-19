@@ -1,6 +1,6 @@
 import React from "react";
 import { View, Text } from "react-native";
-import MenuButton from "../../components/MenuButton";
+import MenuButton from "../../components/MenuButton/MenuButton";
 import styles from "./HomeScreen.styles";
 
 export default function HomeScreen({ navigation }) {
