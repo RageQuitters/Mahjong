@@ -1,7 +1,6 @@
-from detect_tiles import detect_tiles
-from crop_tiles import crop_tiles
-from inference import classify_tile_image
-
+from vision.detect_tiles import detect_tiles
+from vision.crop_tiles import crop_tiles
+from vision.inference import classify_tile_image
 
 def classify_image(image_bgr):
     """

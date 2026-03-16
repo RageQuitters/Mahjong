@@ -1,8 +1,15 @@
 from ultralytics import YOLO
+import os
 
-# Path to trained YOLO detector
-MODEL_PATH = "detection/runs/detect/train4/weights/best.pt"
 CONF_THRESH = 0.5
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "detection",
+                          "runs",
+                          "detect",
+                          "train4",
+                          "weights",
+                          "best.pt")
+
 
 # Load once
 _model = YOLO(MODEL_PATH)

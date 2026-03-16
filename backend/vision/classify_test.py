@@ -1,5 +1,5 @@
 import cv2
-from classify import classify_image
+from vision.classify import classify_image
 
 IMAGE_PATH = "tile_images/test7.jpg"
 DISPLAY_MAX_WIDTH = 1200  # for screen only

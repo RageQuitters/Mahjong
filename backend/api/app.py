@@ -1,61 +1,149 @@
-"""
-Singapore Mahjong Discard Predictor API
-========================================
-POST /predict
-  Body: HandRequest  (concealed, flowers, display)
-  Returns: DiscardResponse or WinResponse
+import io
+from pathlib import Path
 
-The "best_discard" field in DiscardResponse is always a decoded tile
-name (e.g. "3_DOT", "RED", "EAST") that exists in the input concealed list.
-"""
-
-from fastapi import FastAPI, HTTPException
-
+import cv2
+import numpy as np
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import StreamingResponse
 from api.schemas import HandRequest, PredictionResponse
 from engine.model import predict_best_discard
+from engine.encoder import cv_results_to_hand
 import representation.hand as hand
-from representation.all_tiles import ALL_TILES, BONUS_TILES
+
+from vision.classify import classify_image
 
 
 app = FastAPI(
-    title="Singapore Mahjong Discard Predictor",
-    version="2.0.0",
-    description=(
-        "Predicts the best tile to discard from a Singapore Mahjong hand. "
-        "Returns the decoded tile name (e.g. '3_DOT', 'RED', 'EAST'). "
-        "If the hand is already winning, returns the tai score and breakdown."
-    ),
+    title="Mahjong Best Discard API",
+    version="1.0.0"
 )
 
-VALID_TILES = set(ALL_TILES)
-BONUS_SET   = set(BONUS_TILES)
+UPLOAD_DIR = Path("vision/tile_images")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+_CV_TO_CANONICAL = {
+    "RED_DRAGON": "RED",
+    "GREEN_DRAGON": "GREEN",
+    "WHITE_DRAGON": "WHITE",
+}
 
 
-def _validate_tiles(tiles: list[str], field: str):
-    for t in tiles:
-        if t not in VALID_TILES and t not in BONUS_SET:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Unknown tile '{t}' in field '{field}'. "
-                       f"Valid tiles: {sorted(VALID_TILES)}"
-            )
+# -------------------------
+# Shared helpers
+# -------------------------
+async def _decode_image(file: UploadFile) -> np.ndarray:
+    if file.content_type not in ["image/jpeg", "image/jpg", "image/png"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Only JPEG and PNG images are supported"
+        )
+    raw = await file.read()
+    np_arr = np.frombuffer(raw, np.uint8)
+    image_bgr = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    if image_bgr is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not decode image. Make sure it is a valid JPEG or PNG."
+        )
+    return image_bgr
 
 
+def _run_pipeline(image_bgr: np.ndarray):
+    """Run CV + AI pipeline. Returns (cv_results, prediction)."""
+    cv_results = classify_image(image_bgr)
+    if not cv_results:
+        raise HTTPException(
+            status_code=422,
+            detail="No tiles were detected in the image."
+        )
+    print("CV results:", [r["class_name"] for r in cv_results])
+    my_hand = cv_results_to_hand(cv_results)
+    prediction = predict_best_discard(my_hand)
+    print("Prediction:", prediction)
+    
+    return cv_results, prediction
+
+
+# -------------------------
+# JSON-based prediction
+# -------------------------
 @app.post("/predict", response_model=PredictionResponse)
 def predict(req: HandRequest):
+    my_hand = hand.encode_hand(
+        req.concealed,
+        req.flowers,
+        req.display
+    )
+    return predict_best_discard(my_hand)
+
+
+# -------------------------
+# IMAGE-based prediction (JSON response)
+# -------------------------
+@app.post("/image", response_model=PredictionResponse)
+async def predict_from_image(file: UploadFile = File(...)):
+    image_bgr = await _decode_image(file)
+    _, prediction = _run_pipeline(image_bgr)
+    return prediction
+
+
+# -------------------------
+# IMAGE-based prediction (visualised image response)
+# -------------------------
+@app.post("/image/visualise")
+async def predict_from_image_visualise(file: UploadFile = File(...)):
     """
-    Predict the best discard for a Singapore Mahjong hand.
-
-    - **concealed**: list of tile names in hand (e.g. ["1_DOT","2_DOT","RED"])
-    - **flowers**: bonus tiles already collected (e.g. ["blue_1","cat"])
-    - **display**: tiles shown as melds (pong/kong/chi) face-up
-
-    Returns the best tile to discard (decoded name), or tai breakdown if winning.
+    Same as /image but returns a JPEG with the suggested discard tile
+    highlighted in red. If the hand is already winning, all detected
+    tiles are highlighted in gold instead.
     """
-    _validate_tiles(req.concealed, "concealed")
-    _validate_tiles(req.flowers,   "flowers")
-    _validate_tiles(req.display,   "display")
+    image_bgr = await _decode_image(file)
+    cv_results, prediction = _run_pipeline(image_bgr)
 
-    my_hand = hand.encode_hand(req.concealed, req.flowers, req.display)
-    result  = predict_best_discard(my_hand)
-    return result
+    vis = image_bgr.copy()
+
+    if prediction.get("winning"):
+        # Winning hand — highlight all tiles in gold
+        for item in cv_results:
+            x1, y1, x2, y2 = item["box"]
+            cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 215, 255), 3)
+        cv2.putText(
+            vis,
+            f"WIN! Tai: {prediction.get('tai', '?')}",
+            (20, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.4,
+            (0, 215, 255),
+            3,
+        )
+    else:
+        best_discard = prediction.get("best_discard")
+
+        for item in cv_results:
+            x1, y1, x2, y2 = item["box"]
+            canonical = _CV_TO_CANONICAL.get(item["class_name"], item["class_name"])
+            if canonical == best_discard:
+                # Red box + DISCARD label for the suggested tile
+                cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                cv2.putText(
+                    vis,
+                    "DISCARD",
+                    (x1, max(0, y1 - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 0, 255),
+                    2,
+                )
+            else:
+                # Subtle grey box for all other tiles
+                cv2.rectangle(vis, (x1, y1), (x2, y2), (180, 180, 180), 1)
+
+    # Encode result to JPEG and stream back
+    success, buffer = cv2.imencode(".jpg", vis)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to encode output image.")
+
+    return StreamingResponse(
+        io.BytesIO(buffer.tobytes()),
+        media_type="image/jpeg",
+    )
