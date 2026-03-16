@@ -1,18 +1,18 @@
 current state
 
 tile boxes
-input: jpg/png 
--> BGR by cv2.imread + resize
--> binary edge map (preprocess) 
--> list of tuples indicating tile box outline (detect hand_tiles) 
+AI model (works)
 
 classification
-input: jpg/png -> 
-BGR by cv2.imread + resize 
--> list of tile images (BGR) (result of extract tile images, using tile box outline tuple list) 
--> classification (using inference.py ie cnn model on list of tile images) (SUPPOSED TO CONVERT TO RGB ON THIS STEP BUT ITHINK NVR)
+takes from AI model
+3 layers
+1. split into suit/honor/bonus
+2. further split into respective categories
+3. classifies exact
 
-dataset/model
-removed because is a lot of data
-run dataset.py to generate
-run train_model.py to get new model on updated dataset
+-- animals classified as animals, flowers as flowers for now
+-- all non-bonus tiles considered concealed for now
+
+-- accuracy on layer 2 is the best
+-- accuracy on 1 is 2nd best but still got confusing results sometimes
+-- accuracy on 3 is major wip
