@@ -1,29 +1,47 @@
 {
   "expo": {
-    "name": "frontend",
-    "slug": "frontend",
+    "name": "Mahjong Sensei",
+    "slug": "mahjong-sensei",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+    "userInterfaceStyle": "dark",
     "splash": {
-      "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0D0D0D"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "com.yourname.mahjongsensei",
+      "infoPlist": {
+        "NSCameraUsageDescription": "We need camera access to analyse your mahjong hand.",
+        "NSPhotoLibraryUsageDescription": "We need photo library access to upload your mahjong hand."
+      }
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#0D0D0D"
       },
-      "edgeToEdgeEnabled": true
+      "permissions": ["CAMERA", "READ_EXTERNAL_STORAGE"],
+      "package": "com.yourname.mahjongsensei"
     },
     "web": {
-      "favicon": "./assets/favicon.png"
-    }
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-camera",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Mahjong Sensei to access your photos to analyse your hand."
+        }
+      ],
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "scheme": "mahjong-sensei"
   }
 }
