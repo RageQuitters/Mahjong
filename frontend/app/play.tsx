@@ -21,7 +21,7 @@ const { width, height } = Dimensions.get('window');
 
 // ─── CONFIG ──────────────────────────────────────────────────
 // Replace with your actual backend API URL
-const API_URL = 'http://172.31.96.64:8000/image/visualise';
+const API_URL = 'https://mahjong-9j6h.onrender.com/image/visualise';
 // ─────────────────────────────────────────────────────────────
 
 type AnalysisState = 'idle' | 'captured' | 'loading' | 'result' | 'error';
