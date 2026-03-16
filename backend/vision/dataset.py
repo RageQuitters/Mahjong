@@ -1,197 +1,576 @@
 import os
-import random
 import cv2
+import shutil
+import random
 import numpy as np
-from pathlib import Path
 
-from typing import Tuple
-from PIL import Image, ImageEnhance, ImageFilter
+# =============================================================================
+# PATHS
+# =============================================================================
 
-import torch
-from torch.utils.data import Dataset
-from torchvision.transforms import functional as F
-import torchvision.transforms as T
+BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
+RAW_ROOT   = os.path.join(BASE_DIR, "tile_library", "raw")
+BG_ROOT    = os.path.join(BASE_DIR, "tile_library", "backgrounds")
+SYNTH_ROOT = os.path.join(BASE_DIR, "tile_library", "synthetic")
 
-class MahjongTileDataset(Dataset):
-    def __init__(self, root_dir: str, image_size: int = 128):
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
 
-        self.root_dir = root_dir
-        self.image_size = image_size
+TRAIN_SPLIT      = 0.7
+IMG_SIZE         = 128
 
-        self.samples = []
-        self.class_to_idx = {}
+# Samples per tile for all classifiers EXCEPT layer1
+SAMPLES_PER_TILE     = 500
+VAL_SAMPLES_PER_TILE = 50
 
-        classes = sorted(os.listdir(root_dir))
-        for idx, cls in enumerate(classes):
-            cls_path = os.path.join(root_dir, cls)
-            if not os.path.isdir(cls_path):
+# Char gets more data — Chinese characters are visually similar and need more signal
+CHAR_SAMPLES_PER_TILE     = 1500
+CHAR_VAL_SAMPLES_PER_TILE = 100
+
+# Dot gets more data + high grayscale — force dot counting instead of color shortcuts
+DOT_SAMPLES_PER_TILE     = 1500
+DOT_VAL_SAMPLES_PER_TILE = 100
+DOT_GRAYSCALE_FRACTION   = 0.40
+
+# Layer1 group classifier — balanced per group, not per tile
+# suit=27 tiles, honor=7, bonus=8 → target 27*500=13500 per group
+# so honor gets 13500/7 ≈ 1928 per tile, bonus gets 13500/8 ≈ 1687 per tile
+LAYER1_SUIT_SAMPLES_PER_TILE  = 500
+LAYER1_HONOR_SAMPLES_PER_TILE = 1929   # 7 tiles × 1929 ≈ 13503
+LAYER1_BONUS_SAMPLES_PER_TILE = 1688   # 8 tiles × 1688 = 13504
+
+# Layer1 val — balanced per group, targeting ~700 per group (≈2100 total)
+# suit: 27 × 26 = 702, honor: 7 × 100 = 700, bonus: 8 × 88 = 704
+LAYER1_SUIT_VAL_PER_TILE  = 26
+LAYER1_HONOR_VAL_PER_TILE = 100
+LAYER1_BONUS_VAL_PER_TILE = 88
+
+# Train tier ratios — applied proportionally to whatever SAMPLES_PER_TILE is used
+TIER_RATIOS = (0.50, 0.35, 0.15)   # minimal, moderate, aggressive
+
+# Val tier distribution (fixed counts, must sum to VAL_SAMPLES_PER_TILE)
+VAL_TIER_CLEAN    = 20
+VAL_TIER_MODERATE = 20
+VAL_TIER_COLOR    = 10
+
+# Grayscale fractions
+GRAYSCALE_FRACTION       = 0.40
+HONOR_GRAYSCALE_FRACTION = 0.50   # force shape learning for honor
+# DOT_GRAYSCALE_FRACTION defined above with dot config
+
+# Wind gets more data — 4 similar Chinese characters need more signal
+WIND_SAMPLES_PER_TILE     = 1500
+WIND_VAL_SAMPLES_PER_TILE = 100
+
+# Neighbour sliver
+SLIVER_PROB      = 0.3
+SLIVER_THICKNESS = 6
+
+# =============================================================================
+# DATASET STRUCTURE
+#
+#   synthetic/layer1/                    group: suit / honor / bonus
+#   synthetic/layer2/suit_type/          char / bam / dot
+#   synthetic/layer2/honor_type/         wind / dragon  (2-class split)
+#   synthetic/layer2/bonus_type/         animal / flower
+#   synthetic/layer3/char/               1-9
+#   synthetic/layer3/bam/                1-9
+#   synthetic/layer3/dot/                1-9
+#   synthetic/layer3/wind/               EAST / SOUTH / WEST / NORTH
+#   synthetic/layer3/dragon/             RED / GREEN / WHITE
+#   (no layer3 for bonus — animal/flower classification stops at layer2)
+# =============================================================================
+
+# raw_category → (group, suit_type, honor_type, bonus_type)
+# honor_type is "wind" or "dragon" — used for layer2 honor_type and layer3 routing
+CATEGORY_MAP = {
+    "bam":    ("suit",  "bam",  None,     None),
+    "dot":    ("suit",  "dot",  None,     None),
+    "char":   ("suit",  "char", None,     None),
+    "dragon": ("honor", None,   "dragon", None),
+    "wind":   ("honor", None,   "wind",   None),
+    "flower": ("bonus", None,   None,     "flower"),
+    "animal": ("bonus", None,   None,     "animal"),
+}
+
+# Layer1 samples per tile, keyed by group
+LAYER1_SAMPLES = {
+    "suit":  LAYER1_SUIT_SAMPLES_PER_TILE,
+    "honor": LAYER1_HONOR_SAMPLES_PER_TILE,
+    "bonus": LAYER1_BONUS_SAMPLES_PER_TILE,
+}
+
+# Layer1 val samples per tile, keyed by group
+LAYER1_VAL = {
+    "suit":  LAYER1_SUIT_VAL_PER_TILE,
+    "honor": LAYER1_HONOR_VAL_PER_TILE,
+    "bonus": LAYER1_BONUS_VAL_PER_TILE,
+}
+
+# =============================================================================
+# BACKGROUND LOADING
+# =============================================================================
+
+def load_backgrounds():
+    bgs = []
+    if os.path.exists(BG_ROOT):
+        for f in os.listdir(BG_ROOT):
+            if f.lower().endswith((".jpg", ".jpeg", ".png")):
+                img = cv2.imread(os.path.join(BG_ROOT, f))
+                if img is not None:
+                    bgs.append(img)
+    if not bgs:
+        bgs.append(np.full((IMG_SIZE, IMG_SIZE, 3), (34, 100, 34), dtype=np.uint8))
+        print("Warning: No backgrounds found, using fallback green.")
+    print(f"Loaded {len(bgs)} background image(s).")
+    return bgs
+
+
+def sample_background_patch(bgs, size):
+    bg = random.choice(bgs)
+    bh, bw = bg.shape[:2]
+    if bh < size or bw < size:
+        scale  = size / min(bh, bw) + 0.01
+        bg     = cv2.resize(bg, (int(bw * scale), int(bh * scale)))
+        bh, bw = bg.shape[:2]
+    y = random.randint(0, bh - size)
+    x = random.randint(0, bw - size)
+    return bg[y:y+size, x:x+size].copy()
+
+# =============================================================================
+# COMPOSITING
+# =============================================================================
+
+def composite_tile(tile_img, bgs):
+    canvas     = sample_background_patch(bgs, IMG_SIZE)
+    max_jitter = int(IMG_SIZE * 0.05)
+    dy = random.randint(-max_jitter, max_jitter)
+    dx = random.randint(-max_jitter, max_jitter)
+
+    ty = max(0, dy);   tx = max(0, dx)
+    by = min(IMG_SIZE, IMG_SIZE + dy)
+    bx = min(IMG_SIZE, IMG_SIZE + dx)
+    sy = max(0, -dy);  sx = max(0, -dx)
+    ey = sy + (by - ty); ex = sx + (bx - tx)
+
+    canvas[ty:by, tx:bx] = tile_img[sy:ey, sx:ex]
+
+    if random.random() < SLIVER_PROB:
+        edge = random.choice(["top", "bottom", "left", "right"])
+        c    = (230, 230, 230)
+        if   edge == "top":    canvas[0:SLIVER_THICKNESS, :]           = c
+        elif edge == "bottom": canvas[IMG_SIZE-SLIVER_THICKNESS:, :]   = c
+        elif edge == "left":   canvas[:, 0:SLIVER_THICKNESS]           = c
+        elif edge == "right":  canvas[:, IMG_SIZE-SLIVER_THICKNESS:]   = c
+
+    return canvas
+
+# =============================================================================
+# AUGMENTATION PRIMITIVES
+# =============================================================================
+
+def resize(img):
+    return cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+
+
+def rotate(img, max_angle):
+    angle = random.uniform(-max_angle, max_angle)
+    h, w  = img.shape[:2]
+    M     = cv2.getRotationMatrix2D((w//2, h//2), angle, 1)
+    return cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
+
+
+def perspective(img, strength):
+    h, w  = img.shape[:2]
+    shift = strength * min(w, h)
+    pts1  = np.float32([[0,0],[w,0],[0,h],[w,h]])
+    pts2  = np.float32([
+        [random.uniform(0,shift),   random.uniform(0,shift)],
+        [w-random.uniform(0,shift), random.uniform(0,shift)],
+        [random.uniform(0,shift),   h-random.uniform(0,shift)],
+        [w-random.uniform(0,shift), h-random.uniform(0,shift)],
+    ])
+    M = cv2.getPerspectiveTransform(pts1, pts2)
+    return cv2.warpPerspective(img, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
+
+
+def brightness(img, low, high):
+    factor = random.uniform(low, high)
+    return np.clip(img.astype(np.float32) * factor, 0, 255).astype(np.uint8)
+
+
+def noise(img, max_sigma):
+    sigma = random.uniform(0, max_sigma)
+    n     = np.random.normal(0, sigma, img.shape)
+    return np.clip(img.astype(np.float32) + n, 0, 255).astype(np.uint8)
+
+
+def color_jitter(img, strength=1.0):
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:,:,0] = (hsv[:,:,0] + random.uniform(-15*strength, 15*strength)) % 180
+    hsv[:,:,1] = np.clip(hsv[:,:,1] * random.uniform(1-0.4*strength, 1+0.4*strength), 0, 255)
+    hsv[:,:,2] = np.clip(hsv[:,:,2] * random.uniform(1-0.3*strength, 1+0.3*strength), 0, 255)
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+
+def to_grayscale(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+
+def scale_jitter(img):
+    factor       = random.uniform(0.85, 1.15)
+    h, w         = img.shape[:2]
+    new_h, new_w = int(h * factor), int(w * factor)
+    resized      = cv2.resize(img, (new_w, new_h))
+    canvas       = np.zeros((IMG_SIZE, IMG_SIZE, 3), dtype=np.uint8)
+    ch = min(new_h, IMG_SIZE); cw = min(new_w, IMG_SIZE)
+    canvas[:ch, :cw] = resized[:ch, :cw]
+    return canvas
+
+
+
+def tile_tint(img):
+    """Simulate real tile yellowing/cream tint under warm lighting."""
+    tint  = np.array([[[random.uniform(-10, 5),    # B: slightly less
+                         random.uniform(-5, 5),     # G: neutral
+                         random.uniform(0, 20)]]])  # R: warmer
+    return np.clip(img.astype(np.float32) + tint, 0, 255).astype(np.uint8)
+
+
+def shadow_overlay(img):
+    """Simulate a soft shadow cast across part of the tile."""
+    h, w    = img.shape[:2]
+    mask    = np.ones((h, w), dtype=np.float32)
+    edge    = random.choice(["top", "bottom", "left", "right"])
+    depth   = random.uniform(0.55, 0.85)   # how dark the shadow gets
+    size    = random.randint(h // 4, h // 2)
+    if   edge == "top":    mask[:size, :]  = np.linspace(depth, 1.0, size)[:, None]
+    elif edge == "bottom": mask[-size:, :] = np.linspace(1.0, depth, size)[:, None]
+    elif edge == "left":   mask[:, :size]  = np.linspace(depth, 1.0, size)[None, :]
+    elif edge == "right":  mask[:, -size:] = np.linspace(1.0, depth, size)[None, :]
+    mask = np.stack([mask, mask, mask], axis=2)
+    return np.clip(img.astype(np.float32) * mask, 0, 255).astype(np.uint8)
+
+
+def reflection_overlay(img):
+    """Simulate a specular reflection/glare on the tile surface."""
+    h, w   = img.shape[:2]
+    canvas = img.astype(np.float32).copy()
+    cx     = random.randint(w // 4, 3 * w // 4)
+    cy     = random.randint(h // 4, 3 * h // 4)
+    radius = random.randint(w // 6, w // 3)
+    intensity = random.uniform(0.3, 0.7)
+    Y, X   = np.ogrid[:h, :w]
+    dist   = np.sqrt((X - cx)**2 + (Y - cy)**2)
+    glow   = np.clip(1.0 - dist / radius, 0, 1) * intensity
+    glow   = np.stack([glow, glow, glow], axis=2)
+    canvas = np.clip(canvas + glow * 255, 0, 255)
+    return canvas.astype(np.uint8)
+
+
+def jpeg_compress(img, quality_low=50, quality_high=90):
+    """Simulate JPEG compression artifacts."""
+    quality = random.randint(quality_low, quality_high)
+    _, enc  = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return cv2.imdecode(enc, cv2.IMREAD_COLOR)
+
+# =============================================================================
+# TIERED AUGMENTATION
+# =============================================================================
+
+def augment_minimal(img):
+    img = rotate(img, max_angle=15)
+    img = perspective(img, strength=0.03)
+    img = brightness(img, low=0.90, high=1.10)
+    return img
+
+
+def augment_moderate(img):
+    img = rotate(img, max_angle=90)
+    img = perspective(img, strength=0.10)
+    img = brightness(img, low=0.80, high=1.20)
+    img = noise(img, max_sigma=5)
+    img = color_jitter(img, strength=1.0)
+    if random.random() < 0.5:
+        img = tile_tint(img)
+    if random.random() < 0.3:
+        img = shadow_overlay(img)
+    if random.random() < 0.5:
+        img = jpeg_compress(img)
+    return img
+
+
+def augment_aggressive(img):
+    img = rotate(img, max_angle=180)
+    img = perspective(img, strength=0.20)
+    img = brightness(img, low=0.65, high=1.35)
+    img = noise(img, max_sigma=10)
+    img = color_jitter(img, strength=1.0)
+    img = scale_jitter(img)
+    img = tile_tint(img)
+    if random.random() < 0.5:
+        img = shadow_overlay(img)
+    if random.random() < 0.3:
+        img = reflection_overlay(img)
+    img = jpeg_compress(img, quality_low=40, quality_high=80)
+    return img
+
+
+def augment_val_moderate(img):
+    base  = random.choice([0, 90, 180, 270])
+    angle = base + random.uniform(-5, 5)
+    h, w  = img.shape[:2]
+    M     = cv2.getRotationMatrix2D((w//2, h//2), angle, 1)
+    img   = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
+    img   = perspective(img, strength=0.08)
+    return img
+
+# =============================================================================
+# SAMPLE GENERATORS
+# =============================================================================
+
+def generate_train_sample(raw_img, bgs, tier, grayscale_fraction):
+    img = composite_tile(raw_img, bgs)
+    if tier == "minimal":
+        img = augment_minimal(img)
+    elif tier == "moderate":
+        img = augment_moderate(img)
+        if random.random() < grayscale_fraction:
+            img = to_grayscale(img)
+    elif tier == "aggressive":
+        img = augment_aggressive(img)
+        if random.random() < grayscale_fraction:
+            img = to_grayscale(img)
+    return img
+
+
+def generate_val_sample(raw_img, bgs, tier):
+    img = composite_tile(raw_img, bgs)
+    if tier == "moderate":
+        img = augment_val_moderate(img)
+    elif tier == "color":
+        img = color_jitter(img, strength=0.5)
+    return img
+
+# =============================================================================
+# SAVE HELPER
+# =============================================================================
+
+def save(img, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cv2.imwrite(path, img)
+
+# =============================================================================
+# PER-CLASSIFIER GENERATION
+# =============================================================================
+
+def make_tier_list(n_samples):
+    """Build a shuffled tier list of length n_samples using TIER_RATIOS."""
+    r_min, r_mod, r_agg = TIER_RATIOS
+    n_min = round(n_samples * r_min)
+    n_mod = round(n_samples * r_mod)
+    n_agg = n_samples - n_min - n_mod   # absorb rounding remainder
+    tiers = ["minimal"] * n_min + ["moderate"] * n_mod + ["aggressive"] * n_agg
+    random.shuffle(tiers)
+    return tiers
+
+
+def generate_for_classifier(
+    classifier_root,
+    class_label,
+    tile_class,
+    train_files,
+    val_files,
+    tile_class_path,
+    bgs,
+    grayscale_fraction=GRAYSCALE_FRACTION,
+    n_train=SAMPLES_PER_TILE,
+    n_val=VAL_SAMPLES_PER_TILE,
+):
+    """
+    Generate n_train train images and n_val val images for one tile
+    into classifier_root/train/class_label/ and .../val/class_label/.
+
+    class_label may differ from tile_class for layer1/layer2 classifiers
+    where multiple tiles share the same class folder.
+    """
+    # --- TRAIN ---
+    tiers = make_tier_list(n_train)
+
+    for i, tier in enumerate(tiers):
+        f       = train_files[i % len(train_files)]
+        raw_img = cv2.imread(os.path.join(tile_class_path, f))
+        if raw_img is None:
+            continue
+        raw_img = resize(raw_img)
+        sample  = generate_train_sample(raw_img, bgs, tier, grayscale_fraction)
+        name    = f"{tile_class}_{i:04d}.jpg"
+        save(sample, os.path.join(classifier_root, "train", class_label, name))
+
+    # --- VAL ---
+    val_tiers = (
+        ["clean"]    * VAL_TIER_CLEAN +
+        ["moderate"] * VAL_TIER_MODERATE +
+        ["color"]    * VAL_TIER_COLOR
+    )
+    random.shuffle(val_tiers)
+
+    for i, tier in enumerate(val_tiers):
+        f       = val_files[i % len(val_files)]
+        raw_img = cv2.imread(os.path.join(tile_class_path, f))
+        if raw_img is None:
+            continue
+        raw_img = resize(raw_img)
+        sample  = generate_val_sample(raw_img, bgs, tier)
+        name    = f"{tile_class}_val_{i:04d}.jpg"
+        save(sample, os.path.join(classifier_root, "val", class_label, name))
+
+# =============================================================================
+# MAIN GENERATION
+# =============================================================================
+
+VALID_CLASSIFIERS = ["layer1", "suit_type", "honor_type", "bonus_type", "char", "bam", "dot", "wind", "dragon"]
+
+
+def generate(only=None):
+    """
+    Generate synthetic dataset.
+
+    Args:
+        only (list[str] | None): if provided, only regenerate these classifiers
+                                 and leave all others untouched.
+                                 Valid values: layer1, suit_type, honor_type, bonus_type,
+                                               char, bam, dot, wind, dragon
+    """
+    if only is not None:
+        invalid = [k for k in only if k not in VALID_CLASSIFIERS]
+        if invalid:
+            raise ValueError(f"Unknown classifier(s): {invalid}. Valid: {VALID_CLASSIFIERS}")
+
+    paths = {
+        "layer1":     os.path.join(SYNTH_ROOT, "layer1"),
+        "suit_type":  os.path.join(SYNTH_ROOT, "layer2", "suit_type"),
+        "honor_type": os.path.join(SYNTH_ROOT, "layer2", "honor_type"),
+        "bonus_type": os.path.join(SYNTH_ROOT, "layer2", "bonus_type"),
+        "char":       os.path.join(SYNTH_ROOT, "layer3", "char"),
+        "bam":        os.path.join(SYNTH_ROOT, "layer3", "bam"),
+        "dot":        os.path.join(SYNTH_ROOT, "layer3", "dot"),
+        "wind":       os.path.join(SYNTH_ROOT, "layer3", "wind"),
+        "dragon":     os.path.join(SYNTH_ROOT, "layer3", "dragon"),
+    }
+
+    if only is None:
+        # Full rebuild — wipe everything
+        if os.path.exists(SYNTH_ROOT):
+            shutil.rmtree(SYNTH_ROOT)
+        os.makedirs(SYNTH_ROOT)
+        targets = set(VALID_CLASSIFIERS)
+        print("\nGenerating full dataset...\n")
+    else:
+        # Partial rebuild — only wipe the requested classifier folders
+        os.makedirs(SYNTH_ROOT, exist_ok=True)
+        targets = set(only)
+        for key in targets:
+            path = paths[key]
+            if os.path.exists(path):
+                shutil.rmtree(path)
+        print(f"\nRegenerating: {sorted(targets)}\n")
+
+    bgs = load_backgrounds()
+
+    print("\nGenerating dataset...\n")
+
+    for raw_category in sorted(os.listdir(RAW_ROOT)):
+        if raw_category not in CATEGORY_MAP:
+            continue
+
+        group, suit_type, honor_class, bonus_type = CATEGORY_MAP[raw_category]
+        raw_category_path = os.path.join(RAW_ROOT, raw_category)
+
+        for tile_class in sorted(os.listdir(raw_category_path)):
+            tile_class_path = os.path.join(raw_category_path, tile_class)
+            if not os.path.isdir(tile_class_path):
                 continue
 
-            self.class_to_idx[cls] = idx
-            for fname in os.listdir(cls_path):
-                if fname.lower().endswith((".png", ".jpg", ".jpeg")):
-                    self.samples.append(
-                        (os.path.join(cls_path, fname), idx)
-                    )
+            files = [
+                f for f in os.listdir(tile_class_path)
+                if f.lower().endswith((".jpg", ".jpeg", ".png"))
+            ]
+            if not files:
+                print(f"  Warning: no images for {tile_class}, skipping.")
+                continue
 
-        if len(self.samples) == 0:
-            raise RuntimeError(f"No images found in {root_dir}")
+            random.shuffle(files)
+            split       = max(1, int(len(files) * TRAIN_SPLIT))
+            train_files = files[:split]
+            val_files   = files[split:] if len(files) > 1 else files
 
-        self.transform = T.Compose([
-            T.Resize((self.image_size, self.image_size)),
-            T.ToTensor(),
-            T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-        ])
-        
-    def __len__(self):
-        return len(self.samples)
+            def gen(classifier_key, class_label,
+                    gs=GRAYSCALE_FRACTION,
+                    n_train=SAMPLES_PER_TILE,
+                    n_val=VAL_SAMPLES_PER_TILE):
+                if classifier_key not in targets:
+                    return
+                generate_for_classifier(
+                    paths[classifier_key], class_label,
+                    tile_class, train_files, val_files,
+                    tile_class_path, bgs,
+                    grayscale_fraction=gs,
+                    n_train=n_train,
+                    n_val=n_val,
+                )
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
-        img_path, label = self.samples[idx]
-        image = Image.open(img_path).convert("RGB")
+            # ------------------------------------------------------------------
+            # Layer 1 — balanced per group
+            # ------------------------------------------------------------------
+            l1_n = LAYER1_SAMPLES[group]
+            l1_v = LAYER1_VAL[group]
+            gen("layer1", group, n_train=l1_n, n_val=l1_v)
 
-        if self.transform:
-            image = self.transform(image)
+            # ------------------------------------------------------------------
+            # Layer 2
+            # ------------------------------------------------------------------
+            if suit_type is not None:
+                gen("suit_type", suit_type)
+            if honor_class is not None:
+                gen("honor_type", honor_class, gs=HONOR_GRAYSCALE_FRACTION)
+            if bonus_type is not None:
+                gen("bonus_type", bonus_type)
 
-        return image, label
+            # ------------------------------------------------------------------
+            # Layer 3
+            # ------------------------------------------------------------------
+            if suit_type == "char":
+                gen("char", tile_class, n_train=CHAR_SAMPLES_PER_TILE, n_val=CHAR_VAL_SAMPLES_PER_TILE)
+            elif suit_type == "bam":
+                gen("bam", tile_class)
+            elif suit_type == "dot":
+                gen("dot", tile_class, gs=DOT_GRAYSCALE_FRACTION, n_train=DOT_SAMPLES_PER_TILE, n_val=DOT_VAL_SAMPLES_PER_TILE)
 
-# -----------------------------
-# Augmentation utilities
-# -----------------------------
+            if honor_class == "wind":
+                gen("wind", tile_class, gs=HONOR_GRAYSCALE_FRACTION, n_train=WIND_SAMPLES_PER_TILE, n_val=WIND_VAL_SAMPLES_PER_TILE)
+            elif honor_class == "dragon":
+                gen("dragon", tile_class, gs=HONOR_GRAYSCALE_FRACTION)
 
-def random_blur(image: Image.Image, p: float = 0.3, max_radius: float = 2.0) -> Image.Image:
-    if random.random() < p:
-        radius = random.uniform(0.5, max_radius)
-        image = image.filter(ImageFilter.GaussianBlur(radius))
-    return image
+            print(f"  [{group}] {tile_class}: L1={l1_n} train | {l1_v} val (L1) | others={SAMPLES_PER_TILE} train | {VAL_SAMPLES_PER_TILE} val")
 
-def random_color_jitter(
-    image: Image.Image,
-    p: float = 0.2,
-    brightness=0.3,
-    contrast=0.3,
-    saturation=0.3,
-    hue=0.03,
-) -> Image.Image:
-    if random.random() < p:
-        jitter = T.ColorJitter(
-            brightness=brightness,
-            contrast=contrast,
-            saturation=saturation,
-            hue=hue,
-        )
-        image = jitter(image)
-    return image
-
-def random_perspective(
-    img: Image.Image,
-    p: float = 0.8,
-    distortion_scale: float = 0.35
-) -> Image.Image:
-    """
-    Apply a random perspective transform to a PIL image.
-
-    p: probability of applying the transform
-    distortion_scale: how strong the perspective distortion is
-    """
-
-    if random.random() > p:
-        return img
-
-    w, h = img.size
-
-    dx = distortion_scale * w
-    dy = distortion_scale * h
-
-    startpoints = [
-        (0, 0),
-        (w, 0),
-        (w, h),
-        (0, h),
-    ]
-
-    endpoints = [
-        (random.uniform(0, dx), random.uniform(0, dy)),
-        (random.uniform(w - dx, w), random.uniform(0, dy)),
-        (random.uniform(w - dx, w), random.uniform(h - dy, h)),
-        (random.uniform(0, dx), random.uniform(h - dy, h)),
-    ]
-
-    return F.perspective(
-        img,
-        startpoints=startpoints,
-        endpoints=endpoints,
-        interpolation=F.InterpolationMode.BILINEAR,
-        fill=0
-    )
-
-# -----------------------------
-# Dataset generation
-# -----------------------------
-
-def generate_synthetic_dataset(
-    tile_library_dir: str,
-    output_dir: str,
-    images_per_class: int = 500,
-    image_size: int = 128
-):
+    print("\nDataset generation complete.")
+    print("\nExpected layer1 sizes (balanced):")
+    print(f"  train - suit: {27*LAYER1_SUIT_SAMPLES_PER_TILE}, honor: {7*LAYER1_HONOR_SAMPLES_PER_TILE}, bonus: {8*LAYER1_BONUS_SAMPLES_PER_TILE}")
+    print(f"  val   - suit: {27*LAYER1_SUIT_VAL_PER_TILE}, honor: {7*LAYER1_HONOR_VAL_PER_TILE}, bonus: {8*LAYER1_BONUS_VAL_PER_TILE}")
+    print("\nOutput structure:")
+    for key, path in paths.items():
+        print(f"  {path.replace(BASE_DIR, '.')}")
 
 
-    train_ratio = 0.9
-
-    for split in ["train", "val"]:
-        os.makedirs(os.path.join(output_dir, split), exist_ok=True)
-
-    classes = sorted(os.listdir(tile_library_dir))
-
-    for cls in classes:
-        cls_src = os.path.join(tile_library_dir, cls)
-        if not os.path.isdir(cls_src):
-            continue
-
-        base_images = [
-            Image.open(os.path.join(cls_src, f)).convert("RGB")
-            for f in os.listdir(cls_src)
-            if f.lower().endswith((".png", ".jpg", ".jpeg"))
-        ]
-
-        if len(base_images) == 0:
-            continue
-
-        for split in ["train", "val"]:
-            os.makedirs(os.path.join(output_dir, split, cls), exist_ok=True)
-
-        for i in range(images_per_class):
-            img = random.choice(base_images).copy()
-
-            # ------------------ GEOMETRIC AUGMENTATIONS ------------------
-            # Rotation (keep but slightly more realistic)
-            angle = random.uniform(0, 360)
-            img = F.rotate(img, angle, expand=True)
-
-            # Perspective (still useful, but not always)
-            if random.random() < 0.7:
-                img = random_perspective(img)
-
-            # ------------------ PHOTOMETRIC AUGMENTATIONS ------------------
-            img = random_blur(img)          # p = 0.3
-            img = random_color_jitter(img)  # p = 0.2
-
-            # Final resize
-            img = img.resize((image_size, image_size))
-
-            # Train / val split
-            split = "train" if random.random() < train_ratio else "val"
-            out_path = os.path.join(output_dir, split, cls, f"{i:04d}.png")
-            img.save(out_path)
-            
-        print(f"[✓] Generated {images_per_class} images for {cls}")
-
-# -----------------------------
-# Entry point
-# -----------------------------
 if __name__ == "__main__":
-    generate_synthetic_dataset(
-        tile_library_dir="tile_library",
-        output_dir="dataset"
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate synthetic Mahjong tile dataset")
+    parser.add_argument(
+        "--only", nargs="+", metavar="CLASSIFIER",
+        help=f"Regenerate only specific classifiers. Choices: {VALID_CLASSIFIERS}"
     )
+    args = parser.parse_args()
+    generate(only=args.only)
