@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse
-from schemas import HandRequest, PredictionResponse
+from api.schemas import HandRequest, PredictionResponse
 from engine.model import predict_best_discard
 from engine.encoder import cv_results_to_hand
 import representation.hand as hand
