@@ -21,7 +21,7 @@ const { width, height } = Dimensions.get('window');
 
 // ─── CONFIG ──────────────────────────────────────────────────
 const API_URL    = 'https://mahjong-9j6h.onrender.com/image/visualise';
-const HEALTH_URL = 'https://mahjong-9j6h.onrender.com/health';
+const HEALTH_URL = 'https://mahjong-9j6h.onrender.com/docs';
 // ─────────────────────────────────────────────────────────────
 
 type AnalysisState = 'idle' | 'captured' | 'loading' | 'result' | 'error';
