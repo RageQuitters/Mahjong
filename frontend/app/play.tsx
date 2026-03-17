@@ -121,7 +121,7 @@ export default function PlayScreen() {
       const match = /\.(\w+)$/.exec(filename);
       const mimeType = match ? `image/${match[1]}` : 'image/jpeg';
 
-      formData.append('image', {
+      formData.append('file', {
         uri: capturedUri,
         name: filename,
         type: mimeType,
