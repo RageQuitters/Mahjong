@@ -50,6 +50,7 @@ transform = T.Compose([
 _models = {}  # populated on first use
 
 def _load_model(key):
+    print("loading model: ", key)
     path = os.path.join(MODELS_DIR, MODEL_FILES[key])
     if not os.path.exists(path):
         raise FileNotFoundError(f"Model not found: {path}")
@@ -61,6 +62,7 @@ def _load_model(key):
 
 
 def _get_model(key):
+    print("getting model: ", key)
     if key not in _models:
         _models[key] = _load_model(key)
     return _models[key]
@@ -70,6 +72,7 @@ def _get_model(key):
 # =============================================================================
 
 def _get_last_conv(model):
+    print("searching for last conv layer in model...")
     last = None
     for m in model.modules():
         if isinstance(m, torch.nn.Conv2d):
@@ -78,6 +81,7 @@ def _get_last_conv(model):
 
 
 def _save_gradcam(tile_bgr, img_tensor, model, pred_idx, tile_id, suffix):
+    print(f"generating GradCAM for {suffix} (pred idx: {pred_idx})...")
     layer = _get_last_conv(model)
     if layer is None:
         return
@@ -123,6 +127,7 @@ def _save_gradcam(tile_bgr, img_tensor, model, pred_idx, tile_id, suffix):
 # =============================================================================
 
 def _preprocess(tile_bgr):
+    print("preprocessing tile image...")
     img_rgb = tile_bgr[:, :, ::-1].copy()
     img     = Image.fromarray(img_rgb).convert("RGB")
     tensor  = transform(img).unsqueeze(0).to(device)
@@ -163,7 +168,7 @@ def classify_tile_image(tile_bgr, tile_id="tile"):
         str: predicted class name (e.g. "3_BAM", "EAST", "GREEN_DRAGON", "animal")
     """
     img = _preprocess(tile_bgr)
-
+    print("classifying tile image...")
     try:
         # ------------------------------------------------------------------
         # Layer 1 — group
@@ -211,5 +216,6 @@ def classify_tile_image(tile_bgr, tile_id="tile"):
         del img
         gc.collect()
         torch.cuda.empty_cache()
+        print("inference complete, returning label")
 
     return label
