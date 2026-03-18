@@ -1,7 +1,12 @@
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import cv2
 from vision.classify import classify_image
 
-IMAGE_PATH = "tile_images/test7.jpg"
+
+
+IMAGE_PATH = "tile_images/test8.jpg"
 DISPLAY_MAX_WIDTH = 1200  # for screen only
 DISPLAY_MAX_HEIGHT = 800
 

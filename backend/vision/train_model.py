@@ -116,9 +116,10 @@ def train(args):
     # Training loop
     # -------------------------------------------------------------------------
 
-    best_val_acc = 0.0
-    best_epoch   = 0
-    best_state   = None
+    best_val_acc  = 0.0
+    best_epoch    = 0
+    best_state    = None
+    perfect_epoch = None   # epoch where 100% val acc was first reached
 
     for epoch in range(args.epochs):
 
@@ -161,8 +162,15 @@ def train(args):
                 "type":        args.type,
             }
             marker = "  ← best"
+            if val_acc == 100.0:
+                perfect_epoch = epoch + 1
 
         print(f"Epoch [{epoch+1:>3}/{args.epochs}] Loss: {avg_loss:.4f}  Val Acc: {val_acc:.2f}%{marker}")
+
+        # Early stopping — if 100% val acc was reached and 10 more epochs have passed
+        if perfect_epoch is not None and (epoch + 1) >= perfect_epoch + 10:
+            print(f"\nEarly stopping — 100% val acc reached at epoch {perfect_epoch}, ran 10 more epochs.")
+            break
 
     # -------------------------------------------------------------------------
     # Save

@@ -10,6 +10,7 @@ import numpy as np
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 RAW_ROOT   = os.path.join(BASE_DIR, "tile_library", "raw")
+REAL_ROOT  = os.path.join(BASE_DIR, "tile_library", "real")
 BG_ROOT    = os.path.join(BASE_DIR, "tile_library", "backgrounds")
 SYNTH_ROOT = os.path.join(BASE_DIR, "tile_library", "synthetic")
 
@@ -55,13 +56,17 @@ VAL_TIER_MODERATE = 20
 VAL_TIER_COLOR    = 10
 
 # Grayscale fractions
-GRAYSCALE_FRACTION       = 0.40
-HONOR_GRAYSCALE_FRACTION = 0.50   # force shape learning for honor
+GRAYSCALE_FRACTION       = 0.80   # high grayscale — force shape learning across all classifiers
+HONOR_GRAYSCALE_FRACTION = 0.80   # force shape learning for honor
 # DOT_GRAYSCALE_FRACTION defined above with dot config
 
 # Wind gets more data — 4 similar Chinese characters need more signal
 WIND_SAMPLES_PER_TILE     = 1500
 WIND_VAL_SAMPLES_PER_TILE = 100
+
+# Real crop augmentation
+REAL_SAMPLES_PER_IMAGE = 50    # augmented samples generated per real crop image
+# REAL_ROOT tiles use same TIER_RATIOS but lighter augmentation
 
 # Neighbour sliver
 SLIVER_PROB      = 0.3
@@ -275,6 +280,93 @@ def jpeg_compress(img, quality_low=50, quality_high=90):
     quality = random.randint(quality_low, quality_high)
     _, enc  = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
     return cv2.imdecode(enc, cv2.IMREAD_COLOR)
+
+
+
+# =============================================================================
+# REAL CROP AUGMENTATION
+# =============================================================================
+
+def augment_real_minimal(img):
+    """Light augmentation — preserve real-world features."""
+    base  = random.choice([0, 90, 180, 270])
+    angle = base + random.uniform(-15, 15)
+    h, w  = img.shape[:2]
+    M     = cv2.getRotationMatrix2D((w//2, h//2), angle, 1)
+    img   = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
+    img   = brightness(img, low=0.90, high=1.10)
+    return img
+
+
+def augment_real_moderate(img):
+    """Moderate augmentation — some variation while keeping real features."""
+    base  = random.choice([0, 90, 180, 270])
+    angle = base + random.uniform(-15, 15)
+    h, w  = img.shape[:2]
+    M     = cv2.getRotationMatrix2D((w//2, h//2), angle, 1)
+    img   = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
+    img   = brightness(img, low=0.80, high=1.20)
+    img   = jpeg_compress(img, quality_low=60, quality_high=95)
+    return img
+
+
+def augment_real_aggressive(img):
+    """More variation — still no synthetic effects."""
+    base  = random.choice([0, 90, 180, 270])
+    angle = base + random.uniform(-15, 15)
+    h, w  = img.shape[:2]
+    M     = cv2.getRotationMatrix2D((w//2, h//2), angle, 1)
+    img   = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
+    img   = brightness(img, low=0.70, high=1.30)
+    img   = noise(img, max_sigma=5)
+    img   = jpeg_compress(img, quality_low=40, quality_high=85)
+    return img
+
+
+def generate_real_sample(real_img, tier, grayscale_fraction):
+    """Augment a real crop image."""
+    img = resize(real_img)
+    if tier == "minimal":
+        img = augment_real_minimal(img)
+    elif tier == "moderate":
+        img = augment_real_moderate(img)
+        if random.random() < grayscale_fraction:
+            img = to_grayscale(img)
+    elif tier == "aggressive":
+        img = augment_real_aggressive(img)
+        if random.random() < grayscale_fraction:
+            img = to_grayscale(img)
+    return img
+
+
+def generate_real_for_classifier(
+    classifier_root,
+    class_label,
+    tile_class,
+    real_files,
+    real_class_path,
+    grayscale_fraction=GRAYSCALE_FRACTION,
+    n_per_image=REAL_SAMPLES_PER_IMAGE,
+):
+    """
+    Generate augmented samples from real crop images.
+    n_per_image samples are generated per source image using TIER_RATIOS.
+    Only generates train images — val remains synthetic only.
+    """
+    if not real_files:
+        return
+
+    n_total = len(real_files) * n_per_image
+    tiers   = make_tier_list(n_total)
+
+    for i, tier in enumerate(tiers):
+        f        = real_files[i % len(real_files)]
+        real_img = cv2.imread(os.path.join(real_class_path, f))
+        if real_img is None:
+            continue
+        sample = generate_real_sample(real_img, tier, grayscale_fraction)
+        name   = f"{tile_class}_real_{i:04d}.jpg"
+        save(sample, os.path.join(classifier_root, "train", class_label, name))
 
 # =============================================================================
 # TIERED AUGMENTATION
@@ -555,6 +647,82 @@ def generate(only=None):
                 gen("dragon", tile_class, gs=HONOR_GRAYSCALE_FRACTION)
 
             print(f"  [{group}] {tile_class}: L1={l1_n} train | {l1_v} val (L1) | others={SAMPLES_PER_TILE} train | {VAL_SAMPLES_PER_TILE} val")
+
+    # ------------------------------------------------------------------
+    # Pass 2 — Real crops from tile_library/real/
+    # ------------------------------------------------------------------
+    print("\nAdding real crops...\n")
+
+    # Maps real/ folder structure to (classifier_key, class_label, grayscale)
+    # Each entry: (category, tile_class) -> list of (classifier_key, class_label, gs, n_per_image)
+    def get_real_entries(category, tile_class):
+        """Return list of (classifier_key, class_label, gs) for a real crop tile."""
+        entries = []
+        info = CATEGORY_MAP.get(category)
+        if info is None:
+            return entries
+        group, suit_type, honor_class, bonus_type = info
+
+        # Layer 1
+        l1_n = LAYER1_SAMPLES[group]
+        # For layer1 real crops, scale proportionally: real adds 500 per tile equiv
+        # Use fixed 50/image regardless of group — layer1 balance handled by synthetic
+        entries.append(("layer1", group, GRAYSCALE_FRACTION))
+
+        # Layer 2
+        if suit_type is not None:
+            entries.append(("suit_type", suit_type, GRAYSCALE_FRACTION))
+        if honor_class is not None:
+            entries.append(("honor_type", honor_class, HONOR_GRAYSCALE_FRACTION))
+        if bonus_type is not None:
+            entries.append(("bonus_type", bonus_type, GRAYSCALE_FRACTION))
+
+        # Layer 3
+        if suit_type == "char":
+            entries.append(("char", tile_class, GRAYSCALE_FRACTION))
+        elif suit_type == "bam":
+            entries.append(("bam", tile_class, GRAYSCALE_FRACTION))
+        elif suit_type == "dot":
+            entries.append(("dot", tile_class, DOT_GRAYSCALE_FRACTION))
+        if honor_class == "wind":
+            entries.append(("wind", tile_class, HONOR_GRAYSCALE_FRACTION))
+        elif honor_class == "dragon":
+            entries.append(("dragon", tile_class, HONOR_GRAYSCALE_FRACTION))
+
+        return entries
+
+    if os.path.exists(REAL_ROOT):
+        for category in sorted(os.listdir(REAL_ROOT)):
+            real_category_path = os.path.join(REAL_ROOT, category)
+            if not os.path.isdir(real_category_path):
+                continue
+
+            for tile_class in sorted(os.listdir(real_category_path)):
+                real_class_path = os.path.join(real_category_path, tile_class)
+                if not os.path.isdir(real_class_path):
+                    continue
+
+                real_files = [
+                    f for f in os.listdir(real_class_path)
+                    if f.lower().endswith((".jpg", ".jpeg", ".png"))
+                ]
+                if not real_files:
+                    continue
+
+                entries = get_real_entries(category, tile_class)
+                for classifier_key, class_label, gs in entries:
+                    if classifier_key not in targets:
+                        continue
+                    generate_real_for_classifier(
+                        paths[classifier_key], class_label,
+                        tile_class, real_files, real_class_path,
+                        grayscale_fraction=gs,
+                    )
+
+                n_real = len(real_files) * REAL_SAMPLES_PER_IMAGE
+                print(f"  [{category}] {tile_class}: {len(real_files)} real images → {n_real} samples")
+    else:
+        print("  No real crops found, skipping.")
 
     print("\nDataset generation complete.")
     print("\nExpected layer1 sizes (balanced):")
