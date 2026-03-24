@@ -16,7 +16,7 @@ Minimum 1 tai required to declare a win (enforced by the caller / tai_calc).
 from collections import Counter
 from functools import lru_cache
 
-from representation.all_tiles import SUITS, DRAGONS, WINDS
+from backend.representation.all_tiles import SUITS, DRAGONS, WINDS
 
 
 # ------------------------------------------------------------------ #

@@ -27,8 +27,8 @@ Scoring elements (each worth 1 tai unless noted):
 from collections import Counter
 from functools import lru_cache
 
-import config.game_config as config
-from representation.all_tiles import SUITS, DRAGONS, WINDS, ANIMALS
+import backend.config.game_config as config
+from backend.representation.all_tiles import SUITS, DRAGONS, WINDS, ANIMALS
 
 
 # ------------------------------------------------------------------ #

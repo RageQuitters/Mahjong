@@ -21,7 +21,7 @@ Display tiles are excluded — they are already committed melds.
 """
 
 from collections import Counter
-from representation.all_tiles import SUITS, WINDS, DRAGONS, ALL_TILES
+from backend.representation.all_tiles import SUITS, WINDS, DRAGONS, ALL_TILES
 
 HONORS = set(WINDS + DRAGONS)
 

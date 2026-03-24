@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import cv2
 import numpy as np
 
-from vision.model import TileCNN
+from backend.vision.model import TileCNN
 
 # =============================================================================
 # CONFIGURATION

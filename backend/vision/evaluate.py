@@ -6,7 +6,7 @@ import numpy as np
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 
-from model import TileCNN
+from backend.vision.model import TileCNN
 
 # =============================================================================
 # PATHS

@@ -20,8 +20,8 @@ import { Ionicons } from '@expo/vector-icons';
 const { width, height } = Dimensions.get('window');
 
 // ─── CONFIG ──────────────────────────────────────────────────
-const API_URL    = 'https://mahjong-9j6h.onrender.com/image/visualise';
-const HEALTH_URL = 'https://mahjong-9j6h.onrender.com/docs';
+const API_URL    = 'https://ragequitters--mahjong-backend-fastapi-app.modal.run/image/visualise';
+const HEALTH_URL = 'https://ragequitters--mahjong-backend-fastapi-app.modal.run/docs';
 // ─────────────────────────────────────────────────────────────
 
 type AnalysisState = 'idle' | 'captured' | 'loading' | 'result' | 'error';

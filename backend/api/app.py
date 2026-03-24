@@ -3,19 +3,28 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse
-from api.schemas import HandRequest, PredictionResponse
-from engine.model import predict_best_discard
-from engine.encoder import cv_results_to_hand
-import representation.hand as hand
+from backend.api.schemas import HandRequest, PredictionResponse
+from backend.engine.model import predict_best_discard
+from backend.engine.encoder import cv_results_to_hand
+import backend.representation.hand as hand
 
-from vision.classify import classify_image
+from backend.vision.classify import classify_image
 
 
 app = FastAPI(
     title="Mahjong Best Discard API",
     version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # allow all origins (you can restrict to your frontend URL)
+    allow_credentials=True,
+    allow_methods=["*"],  # allow POST, GET, OPTIONS, etc.
+    allow_headers=["*"],  # allow custom headers
 )
 
 UPLOAD_DIR = Path("vision/tile_images")

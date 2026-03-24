@@ -5,9 +5,9 @@ Thin module kept for API compatibility.
 All prediction is now done via the heuristic — no ML model required.
 """
 
-import rules.win_checker as win_checker
-import rules.tai_calc    as tai_calc
-from engine.heuristic import best_discard
+import backend.rules.win_checker as win_checker
+import backend.rules.tai_calc    as tai_calc
+from backend.engine.heuristic import best_discard
 
 
 def predict_best_discard(hand_obj: dict) -> dict:
