@@ -55,21 +55,10 @@ If your hand is already a winning hand, all tiles are highlighted in gold instea
 
 Tap **New Hand** to analyse another hand.
 
----
 
-## ⚠️ Known Limitation — Cold Start Delay
+### 5. Convolutional Neural Network and Classification Model
+<img width="1280" height="960" alt="image" src="https://github.com/user-attachments/assets/e20136aa-67e7-4665-b671-a99de557a26d" />
 
-The backend is hosted on **Render.com's free tier**. Free tier services spin down after 15 minutes of inactivity and take **30–60 seconds to wake up** on the first request.
-
-**What to expect:**
-
-- First request of the day: ~1–3 minutes total (includes cold start + inference)
-- Subsequent requests: ~10–30 seconds (server already warm)
-- The app shows a live timer and status updates so you know it's working, not frozen
-
-This is a known infrastructure limitation of the free tier. If the app is being used in production, upgrading to Render's paid tier ($25/month, 2GB RAM) eliminates the cold start entirely.
-
----
 
 ## Running the App
 
