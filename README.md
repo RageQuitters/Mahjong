@@ -18,9 +18,11 @@ No manual tile entry. No guessing. Just point, shoot, and play smarter.
 ![photo_6183901760146050496_y](https://github.com/user-attachments/assets/43d814cd-5dcf-465b-95e9-ad095eac4d4f)
 
 ### 1. Open the App
+
 On the home screen you'll see the **Analyse Hand** button. Tap it to get started.
 
 ### 2. Capture Your Hand
+
 On the Analyse Hand screen, you'll find instructions on how to get the best results:
 
 - 📸 Lay your tiles face-up on a flat surface
@@ -35,6 +37,7 @@ Tap **Take Photo** to use your camera, or **Gallery** to pick an existing photo.
 ![photo_6183901760146050493_y](https://github.com/user-attachments/assets/fd12a7a4-5baf-4e9f-b24d-5e4e3e901e17)
 
 ### 3. Analyse
+
 Once your hand is captured, tap **ANALYSE DISCARD**. The app uploads your image to the AI backend, which:
 
 1. Detects all tiles using a YOLO object detection model
@@ -45,6 +48,7 @@ Once your hand is captured, tap **ANALYSE DISCARD**. The app uploads your image 
 ![photo_6183901760146050494_y](https://github.com/user-attachments/assets/e4e002e6-97fb-41da-9844-f8120b71d7eb)
 
 ### 4. See Your Result
+
 The result screen shows your hand with the **DISCARD** label drawn over the recommended tile in red. All other tiles are outlined in grey for reference.
 
 If your hand is already a winning hand, all tiles are highlighted in gold instead.
@@ -58,6 +62,7 @@ Tap **New Hand** to analyse another hand.
 The backend is hosted on **Render.com's free tier**. Free tier services spin down after 15 minutes of inactivity and take **30–60 seconds to wake up** on the first request.
 
 **What to expect:**
+
 - First request of the day: ~1–3 minutes total (includes cold start + inference)
 - Subsequent requests: ~10–30 seconds (server already warm)
 - The app shows a live timer and status updates so you know it's working, not frozen
@@ -82,18 +87,15 @@ The app is built with **Expo** (React Native).
 # Install dependencies
 npm install
 
-# Start the Expo dev server
-npx expo start
+# Start the Expo dev server on android
+npx expo run:android
 ```
-
-Then scan the QR code with:
-- **iOS**: Camera app
-- **Android**: Expo Go app
 
 ### Troubleshooting
 
 **Cannot connect to Metro**  
 Make sure your phone and computer are on the same WiFi network. If they are and it still fails, run with tunnel mode:
+
 ```bash
 npx expo start --tunnel
 ```
@@ -108,14 +110,14 @@ The image could not be decoded. Make sure all tiles are visible and the photo is
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Mobile App | React Native + Expo |
-| Tile Detection | YOLOv8 (custom trained) |
-| Tile Classification | 3-layer TileCNN (PyTorch) |
-| Mahjong Engine | Custom Singapore rules engine |
-| Backend API | FastAPI (Python) |
-| Hosting | Render.com (free tier) |
+| Layer               | Technology                    |
+| ------------------- | ----------------------------- |
+| Mobile App          | React Native + Expo           |
+| Tile Detection      | YOLOv8 (custom trained)       |
+| Tile Classification | 3-layer TileCNN (PyTorch)     |
+| Mahjong Engine      | Custom Singapore rules engine |
+| Backend API         | FastAPI (Python)              |
+| Hosting             | Render.com (free tier)        |
 
 ---
 
@@ -123,13 +125,13 @@ The image could not be decoded. Make sure all tiles are visible and the photo is
 
 ## API Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/image/visualise` | Upload image, returns annotated JPEG |
-| `POST` | `/image` | Upload image, returns JSON prediction |
-| `POST` | `/predict` | JSON hand input, returns JSON prediction |
-| `GET` | `/docs` | Swagger UI (also used to wake up server) |
+| Method | Endpoint           | Description                              |
+| ------ | ------------------ | ---------------------------------------- |
+| `POST` | `/image/visualise` | Upload image, returns annotated JPEG     |
+| `POST` | `/image`           | Upload image, returns JSON prediction    |
+| `POST` | `/predict`         | JSON hand input, returns JSON prediction |
+| `GET`  | `/docs`            | Swagger UI (also used to wake up server) |
 
 ---
 
-*Built for Singapore Mahjong (14-tile) rules.*
+_Built for Singapore Mahjong (14-tile) rules._
